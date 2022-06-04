@@ -14,9 +14,25 @@
 #=================================================
 #region Functions
 
+function osdcloud-TestHPIASupport {
+    $CabPath = "$env:TEMP\platformList.cab"
+    $XMLPath = "$env:TEMP\platformList.xml"
+    $PlatformListCabURL = "https://hpia.hpcloud.hp.com/ref/platformList.cab"
+    Invoke-WebRequest -Uri $PlatformListCabURL -OutFile $CabPath -UseBasicParsing
+    $Expand = expand $CabPath $XMLPath
+    [xml]$XML = Get-Content $XMLPath
+    $Platforms = $XML.ImagePal.Platform.SystemID
+    $MachinePlatform = (Get-CimInstance -Namespace root/cimv2 -ClassName Win32_BaseBoard).Product
+    if ($MachinePlatform -in $Platforms){$HPIASupport = $true}
+    else {$HPIASupport = $false}
+
+    return $HPIASupport
+    }
+
 function osdcloud-InstallModuleHPCMSL {
     [CmdletBinding()]
     param ()
+    osdcloud-SetExecutionPolicy
     $InstallModule = $false
     $PSModuleName = 'HPCMSL'
     if (-not (Get-Module -Name PowerShellGet -ListAvailable | Where-Object {$_.Version -ge '2.2.5'})) {
@@ -24,7 +40,7 @@ function osdcloud-InstallModuleHPCMSL {
         Install-Package -Name PowerShellGet -MinimumVersion 2.2.5 -Force -Confirm:$false -Source PSGallery | Out-Null
 
         Write-Host -ForegroundColor DarkGray 'Import-Module PackageManagement,PowerShellGet [Global]'
-        Import-Module PackageManagement,PowerShellGet -Force -Scope Global
+        Import-Module PackageManagement,PowerShellGet -Force -Scope Global -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         }
     $InstalledModule = Get-InstalledModule $PSModuleName -ErrorAction Ignore | Select-Object -First 1
     $GalleryPSModule = Find-Module -Name $PSModuleName -ErrorAction Ignore
@@ -41,14 +57,14 @@ function osdcloud-InstallModuleHPCMSL {
     if ($InstallModule) {
         if ($WindowsPhase -eq 'WinPE') {
             Write-Host -ForegroundColor DarkGray "Install-Module $PSModuleName $($GalleryPSModule.Version) [AllUsers]"
-            Install-Module $PSModuleName -SkipPublisherCheck -Scope AllUsers -Force -AcceptLicense
+            Install-Module $PSModuleName -SkipPublisherCheck -Scope AllUsers -Force -AcceptLicense -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
         }
         else {
             Write-Host -ForegroundColor DarkGray "Install-Module $PSModuleName $($GalleryPSModule.Version) [AllUsers]"
-            Install-Module $PSModuleName -SkipPublisherCheck -AcceptLicense -Scope AllUsers -Force
+            Install-Module $PSModuleName -SkipPublisherCheck -AcceptLicense -Scope AllUsers -Force -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
         }
     }
-    Import-Module -Name $PSModuleName -Force -Global -ErrorAction SilentlyContinue
+    Import-Module -Name $PSModuleName -Force -Global -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
 }
 function osdcloud-DetermineHPTPM{
     $SP87753 = Get-CimInstance  -Namespace "root\cimv2\security\MicrosoftTPM" -query "select * from win32_tpm where IsEnabled_InitialValue = 'True' and ((ManufacturerVersion like '7.%' and ManufacturerVersion < '7.63.3353') or (ManufacturerVersion like '5.1%') or (ManufacturerVersion like '5.60%') or (ManufacturerVersion like '5.61%') or (ManufacturerVersion like '4.4%') or (ManufacturerVersion like '6.40%') or (ManufacturerVersion like '6.41%') or (ManufacturerVersion like '6.43.243.0') or (ManufacturerVersion like '6.43.244.0'))"
@@ -57,21 +73,25 @@ function osdcloud-DetermineHPTPM{
     elseif ($SP94937){Return "SP94937"}
     else{Return $false}
 }
+function osdcloud-SetTPMBIOSSettings {
+    osdcloud-SetHPBIOSSetting -SettingName 'TPM Device' -Value 'Available'
+    osdcloud-SetHPBIOSSetting -SettingName 'TPM State' -Value 'Enable'
+    osdcloud-SetHPBIOSSetting -SettingName 'TPM Activation Policy' -Value 'No Prompts'
+}
 function osdcloud-DetermineHPBIOSUpdateAvailable{
     [CmdletBinding()]
     param ([Switch]$Details)
     osdcloud-InstallModuleHPCMSL
     Import-Module -Name HPCMSL -Force
-    [Version]$CurrentVersion = Get-HPBIOSVersion
-    [Version]$LatestVersion = (Get-HPBIOSUpdates -Latest).Ver
+    $BIOSIsCurrent = Get-HPBIOSUpdates -Check
     if ($Details){
-        if ($CurrentVersion -lt $LatestVersion){Return "BIOS Update Available: $LatestVersion"}
-        else {Return "BIOS Already Current: $CurrentVersion"}
+        if (!($BIOSIsCurrent)){Return "HP BIOS Update Available: $((Get-HPBIOSUpdates -Latest).ver)"}
+        else {Return "HP BIOS Already Current: $(Get-HPBIOSVersion)"}
         }
     else
         {
-        if ($CurrentVersion -lt $LatestVersion){Return $true}
-        else {Return $false}
+        if ($BIOSIsCurrent){Return $false}
+        else {Return $true}
         }
 }
 function osdcloud-DownloadHPTPM {
@@ -96,6 +116,65 @@ function osdcloud-DownloadHPTPM {
             }
         }    
 }
+function osdcloud-DownloadHPTPMEXE {
+    osdcloud-InstallModuleHPCMSL
+    osdcloud-SetHPBIOSSetting -SettingName 'Virtualization Technology (VTx)' -Value 'Disable'
+    Import-Module -Name HPCMSL -Force
+    $TPMUpdate = osdcloud-DetermineHPTPM
+    if ($TPMUpdate -ne $false)
+        {
+        $DownloadFolder = "C:\OSDCloud\HP\TPM"
+        if (!(Test-Path -Path $DownloadFolder)){New-Item -Path $DownloadFolder -ItemType Directory -Force |Out-Null}
+        $UpdatePath = "$DownloadFolder\$TPMUpdate.exe"
+        Write-Host "Starting download of TPM Update $TPMUpdate"
+        Get-Softpaq -Number $TPMUpdate -SaveAs $UpdatePath -Overwrite yes
+        if (!(Test-Path -Path $UpdatePath)){Throw "Failed to Download TPM Update"}
+    }    
+}
+function osdcloud-InstallTPMEXE {
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory=$false)]
+        $path,
+        [Parameter(Mandatory=$false)]
+        $filename,
+        [Parameter(Mandatory=$false)]
+        $spec,
+        [Parameter(Mandatory=$false)]
+        $logsuffix,
+        [Parameter(Mandatory=$false)]
+        $WorkingFolder
+        )
+    $DownloadFolder = "C:\OSDCloud\HP\TPM"
+    $TPMUpdate = (Get-ChildItem -Path $DownloadFolder -Filter *.exe).FullName
+    if (Test-Path $TPMUpdate){
+        Start-Process -FilePath $TPMUpdate -ArgumentList "/s /e /f $DownloadFolder" -Wait
+        if (!(Test-Path -Path "$DownloadFolder\TPMConfig64.exe")){Throw "Failed to Extract TPM Update"}
+        $Process = "$DownloadFolder\TPMConfig64.exe"
+        #Create Argument List
+        if ($filename -and $spec){$TPMArg = "-s -f$filename -a$spec -l$($env:temp)\TPMConfig.log"}
+        elseif ($filename -and !($spec)) { $TPMArg = "-s -f$filename -l$($env:temp)\TPMConfig.log"}
+        elseif (!($filename) -and $spec) { $TPMArg = "-s -a$spec -l$($env:temp)\TPMConfig.log"}
+        elseif (!($filename) -and !($spec)) { $TPMArg = "-s -l$($env:temp)\TPMConfig.log"}
+        
+        Write-Output "Running Command: Start-Process -FilePath $Process -ArgumentList $TPMArg -PassThru -Wait"
+        $TPMUpdate = Start-Process -FilePath $Process -ArgumentList $TPMArg -PassThru -Wait
+        write-output "TPMUpdate Exit Code: $($TPMUpdate.exitcode)"
+    }
+    else {Throw "Failed to Locate Update Path"}
+}
+#does not work in pe
+function osdcloud-DownloadHPBIOSEXE {
+    osdcloud-InstallModuleHPCMSL
+    Import-Module -Name HPCMSL -Force
+    $SoftpaqNumber = (Get-SoftpaqList -Category BIOS | Select-Object -Last 1).id
+    $DownloadFolder = "C:\OSDCloud\HP\BIOS"
+            if (!(Test-Path -Path $DownloadFolder)){New-Item -Path $DownloadFolder -ItemType Directory -Force |Out-Null}
+            $UpdatePath = "$DownloadFolder\$BIOSUpdate.exe"
+            Write-Host "Starting download of System Firmware Update $BIOSUpdate"
+            Get-Softpaq -Number $SoftpaqNumber -SaveAs $UpdatePath -Overwrite yes
+            if (!(Test-Path -Path $UpdatePath)){Throw "Failed to Download System Firmware Update"}
+}
 function osdcloud-UpdateHPTPM {
     [CmdletBinding()]
     Param (
@@ -115,6 +194,7 @@ function osdcloud-UpdateHPTPM {
         write-output "Determined TPM Update $logsuffix required"
         if ((Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction SilentlyContinue).ProtectionStatus -eq "ON"){
             Suspend-BitLocker -MountPoint $env:SystemDrive -RebootCount 2 | Out-Null}
+        osdcloud-SetHPBIOSSetting -SettingName 'Virtualization Technology (VTx)' -Value 'Disable'
         $extractPath = osdcloud-DownloadHPTPM -WorkingFolder $WorkingFolder
         if (!(Test-Path -Path $extractPath)){Throw "Failed to Locate Update Path"}
         $Process = "$extractPath\TPMConfig64.exe"
@@ -129,7 +209,9 @@ function osdcloud-UpdateHPTPM {
         write-output "TPMUpdate Exit Code: $($TPMUpdate.exitcode)"
     }
     else {
+        osdcloud-SetHPBIOSSetting -SettingName 'Virtualization Technology (VTx)' -Value 'Enable'
         return "No TPM Update Available"
+    }
     }
 Function osdcloud-RunHPIA {
     <#
@@ -161,10 +243,8 @@ Function osdcloud-RunHPIA {
             [ValidateSet("List", "Download", "Extract", "Install", "UpdateCVA")]
             $Action = "Install",
             [Parameter(Mandatory=$false)]
-            [ValidateSet("List", "Download", "Extract", "Install", "UpdateCVA")]
             $LogFolder = "$env:systemdrive\OSDCloud\Logs",
             [Parameter(Mandatory=$false)]
-            [ValidateSet("List", "Download", "Extract", "Install", "UpdateCVA")]
             $ReportsFolder = "$env:systemdrive\OSDCloud\HPIA"
             )
         # Params
@@ -184,7 +264,6 @@ Function osdcloud-RunHPIA {
         $script:TempWorkFolder = "$env:temp\HPIA"
         try 
         {
-            [void][System.IO.Directory]::CreateDirectory($WorkingDirectory)
             [void][System.IO.Directory]::CreateDirectory($LogFolder)
             [void][System.IO.Directory]::CreateDirectory($TempWorkFolder)
             [void][System.IO.Directory]::CreateDirectory($ReportsFolder)
@@ -237,7 +316,7 @@ Function osdcloud-RunHPIA {
         CMTraceLog –Message "Finding info for latest version of HP Image Assistant (HPIA)" –Component "Download"
         try
         {
-            $HTML = Invoke-WebRequest –Uri $HPIAWebUrl –ErrorAction Stop
+            $HTML = Invoke-WebRequest –Uri $HPIAWebUrl –ErrorAction Stop -UseBasicParsing
         }
         catch 
         {
@@ -273,7 +352,6 @@ Function osdcloud-RunHPIA {
                 If ($BitsJob.JobState -eq "Error")
                 {
                     CMTraceLog –Message "BITS tranfer failed: $($BitsJob.ErrorDescription)" –Component "Download" –Type 3
-                    throw
                 }
                 CMTraceLog –Message "Download is finished" –Component "Download"
                 Complete-BitsTransfer –BitsJob $BitsJob
@@ -284,7 +362,10 @@ Function osdcloud-RunHPIA {
             {
                 CMTraceLog –Message "Failed to start a BITS transfer for the HPIA: $($_.Exception.Message)" –Component "Download" –Type 3
                 Write-Host "Failed to start a BITS transfer for the HPIA: $($_.Exception.Message)" -ForegroundColor Red
-                throw
+            }
+            if (!(Test-Path -Path $TempWorkFolder\$HPIAFileName)){
+                write-host "Failed to download HPIA using BITS, trying WebRequest"  -ForegroundColor yellow
+                Invoke-WebRequest -UseBasicParsing -uri $HPIADownloadURL -OutFile $TempWorkFolder\$HPIAFileName -ErrorAction Stop
             }
         }
         else
@@ -321,11 +402,11 @@ Function osdcloud-RunHPIA {
         ##############################################
         ## Install Updates with HPIA ##
         ##############################################
-        CMTraceLog –Message "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Silent /ReportFolder:$ReportsFolder" –Component "Update"
-        Write-Host "Running HPIA With Args: /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Silent /ReportFolder:$ReportsFolder" -ForegroundColor Green
+        CMTraceLog –Message "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –Component "Update"
+        Write-Host "Running HPIA With Args: /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" -ForegroundColor Green
         try 
         {
-            $Process = Start-Process –FilePath $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder –ArgumentList "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Silent /ReportFolder:$ReportsFolder" –NoNewWindow –PassThru –Wait –ErrorAction Stop
+            $Process = Start-Process –FilePath $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder –ArgumentList "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –NoNewWindow –PassThru –Wait –ErrorAction Stop
             If ($Process.ExitCode -eq 0)
             {
                 CMTraceLog –Message "Analysis complete" –Component "Update"
@@ -533,8 +614,122 @@ Function osdcloud-RunHPIA {
         CMTraceLog –Message "NO JSON report." –Component "Report" –Type 1
         }
     }
+
+function osdcloud-downloadHPIA {
+    $null = New-Item –Path "HKLM:\SOFTWARE\Policies\Microsoft" –Name "Internet Explorer" –Force
+    $null = New-Item –Path "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer" –Name "Main" –Force
+    $null = New-ItemProperty –Path "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Main" –Name "DisableFirstRunCustomize" –PropertyType DWORD –Value 1 –Force
+    $HPIAWebUrl = "https://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html"
+    $script:TempWorkFolder = "c:\windows\temp\HPIA"
+    [void][System.IO.Directory]::CreateDirectory($TempWorkFolder)
+    $HTML = Invoke-WebRequest –Uri $HPIAWebUrl –ErrorAction Stop -UseBasicParsing
+            
+    $HPIASoftPaqNumber = ($HTML.Links | Where {$_.href -match "hp-hpia-"}).outerText
+    $HPIADownloadURL = ($HTML.Links | Where {$_.href -match "hp-hpia-"}).href
+    $HPIAFileName = $HPIADownloadURL.Split('/')[-1]
+    Write-Host "Download URL is $HPIADownloadURL" -ForegroundColor Green
+    
+    Write-Host "Downloading HPIA" -ForegroundColor Green
+    if (!(Test-Path -Path "$TempWorkFolder\$HPIAFileName")){
+        try 
+        {
+            $ExistingBitsJob = Get-BitsTransfer –Name "$HPIAFileName" –AllUsers –ErrorAction SilentlyContinue
+            If ($ExistingBitsJob)
+            {
+                Remove-BitsTransfer –BitsJob $ExistingBitsJob
+            }
+            $BitsJob = Start-BitsTransfer –Source $HPIADownloadURL –Destination $TempWorkFolder\$HPIAFileName –Asynchronous –DisplayName "$HPIAFileName" –Description "HPIA download" –RetryInterval 60 –ErrorAction Stop 
+            do {
+                Start-Sleep –Seconds 5
+                $Progress = [Math]::Round((100 * ($BitsJob.BytesTransferred / $BitsJob.BytesTotal)),2)
+            } until ($BitsJob.JobState -in ("Transferred","Error"))
+            Complete-BitsTransfer –BitsJob $BitsJob
+            Write-Host "BITS transfer is complete" -ForegroundColor Green
+        }
+        catch 
+        {
+        }
+        if (!(Test-Path -Path $TempWorkFolder\$HPIAFileName)){
+            Invoke-WebRequest -UseBasicParsing -uri $HPIADownloadURL -OutFile $TempWorkFolder\$HPIAFileName -ErrorAction Stop
+        }
+        if (Test-Path -Path "$TempWorkFolder\$HPIAFileName"){
+            Write-Host "HPIA download is complete" -ForegroundColor Green
+        }
+        else {Write-Host "HPIA download failed" -ForegroundColor red}
+    }
+    else
+        {
+        Write-Host "$HPIAFileName already downloaded, skipping step" -ForegroundColor Green
+        }
+    }    
+
+function osdcloud-UpdateHPBIOS {
+    #Stage Firmware Update for Next Reboot
+    Write-Host -ForegroundColor DarkGray "========================================================================="
+    osdcloud-InstallModuleHPCMSL
+    Write-Host -ForegroundColor Cyan "Updating HP System Firmware"
+    if (Get-HPBIOSSetupPasswordIsSet){Write-Host -ForegroundColor Red "Device currently has BIOS Setup Password, Please Update BIOS via different method"}
+    else{
+        Write-Host -ForegroundColor DarkGray "Current Firmware: $(Get-HPBIOSVersion)"
+        Write-Host -ForegroundColor DarkGray "Staging Update: $((Get-HPBIOSUpdates -Latest).ver) "
+        #Details: https://developers.hp.com/hp-client-management/doc/Get-HPBiosUpdates
+        Get-HPBIOSUpdates -Flash -Yes -Offline -BitLocker Ignore
+    }
 }
 
+function osdcloud-SetHPBIOSSetting {
+    [CmdletBinding()]
+Param (
+	[Parameter(Mandatory=$true)]
+	$SettingName,
+	[Parameter(Mandatory=$true)]
+	$Value,
+	[Parameter(Mandatory=$false)]
+	$BIOSPW
+	)
 
+<# Testing
+$SettingName = "SVM CPU Virtualization"
+$Value = "Enable"
+$BIOSPW = 'P@ssw0rd'
+#>
+
+$BIOS= Get-WmiObject -class hp_biossettinginterface -Namespace "root\hp\instrumentedbios"
+$BIOSSetting = Get-CimInstance -class hp_biossetting -Namespace "root\hp\instrumentedbios"
+$CurrentValue = ($BIOSSetting | ?{ $_.Name -eq $SettingName }).CurrentValue
+
+if ($CurrentValue -ne $Null)
+    {
+    if ($CurrentValue -eq $Value)
+        {
+        Write-Output "BIOS Setting: $SettingName already configured to Requested Value: $Value"
+        }
+    else
+        {
+        If (($BIOSSetting | ?{ $_.Name -eq 'Setup Password' }).IsSet -eq 0){
+            $Result = $BIOS.SetBIOSSetting($SettingName,$Value)
+            }
+        else{
+            $PW = "<utf-16/>$BIOSPW"
+            $Result = $BIOS.SetBIOSSetting($SettingName,$Value,$PW)
+            }
+        if ($Result.Return -eq 0){
+            Write-Output "Successfully Updated: $SettingName to: $Value"
+            }
+        else{
+            $BIOSSetting = Get-CimInstance -class hp_biossetting -Namespace "root\hp\instrumentedbios"
+            $CurrentValue = ($BIOSSetting | ?{ $_.Name -eq $SettingName }).CurrentValue
+            Write-Output "Failed to Update BIOS Setting: $SettingName to: $Value"
+            Write-Output "Current Value: $CurrentValue"
+            }
+        }
+    }
+else
+    {
+    Write-Output "BIOS Setting: $SettingName is NOT Available on this Hardware"
+    }
+
+
+}
 #endregion
 #=================================================

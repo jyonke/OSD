@@ -11,6 +11,7 @@
     Invoke-Expression (Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/OSDeploy/OSD/master/cloud/modules/_anywhere.psm1')
 #>
 #=================================================
+
 #region Functions
 function osdcloud-InstallPackageManagement {
     [CmdletBinding()]
@@ -51,7 +52,30 @@ function osdcloud-EjectCD {
     [CmdletBinding()]
     param ()   
     (New-Object -ComObject 'Shell.Application').Namespace(17).Items() | Where-Object { $_.Type -eq 'CD Drive' } | ForEach-Object { $_.InvokeVerb('Eject') }
-} 
+}
+
+function osdcloud-UpdateModuleFilesManually {
+    #Custom Testing - Overwrites files in module with updated ones in GitHub
+    $ModulePath = (Get-ChildItem -Path "$($Env:ProgramFiles)\WindowsPowerShell\Modules\osd" | Where-Object {$_.Attributes -match "Directory"} | select -Last 1).fullname
+    write-host "Updating Files in $ModulePath"
+    $OSDCloudGUIDevProjectPath = "Projects\OSDCloudDev"
+    $OSDCloudFunctionsPath = "Public\Functions\OSDCloud"
+    $GitHubURI = "https://raw.githubusercontent.com/OSDeploy/OSD/master"
+    Invoke-WebRequest -UseBasicParsing -uri "$GitHubURI/$OSDCloudGUIDevProjectPath/MainWindow.ps1" -OutFile "$ModulePath/$OSDCloudGUIDevProjectPath/MainWindow.ps1"
+    Invoke-WebRequest -UseBasicParsing -uri "$GitHubURI/$OSDCloudGUIDevProjectPath/MainWindow.xaml" -OutFile "$ModulePath/$OSDCloudGUIDevProjectPath/MainWindow.xaml"
+    Invoke-WebRequest -UseBasicParsing -uri "$GitHubURI/$OSDCloudFunctionsPath/Invoke-OSDSpecialize.ps1" -OutFile "$ModulePath/$OSDCloudFunctionsPath/Invoke-OSDSpecialize.ps1"
+    Invoke-WebRequest -UseBasicParsing -uri "$GitHubURI/Public/OSDCloud.ps1" -OutFile "$ModulePath/Public/OSDCloud.ps1"
+    Invoke-WebRequest -UseBasicParsing -uri "$GitHubURI/OSD.psd1" -OutFile "$ModulePath/OSD.psd1"
+    Import-Module -Name OSD -Force
+    if ($WindowsPhase -eq 'WinPE') {
+        if (Test-Path -Path "C:\Program Files\WindowsPowerShell\Modules\osd"){
+            $ModulePath = (Get-ChildItem -Path "C:\Program Files\WindowsPowerShell\Modules\osd" | Where-Object {$_.Attributes -match "Directory"} | select -Last 1).fullname
+            write-host "Updating Files in $ModulePath"
+            Invoke-WebRequest -UseBasicParsing -uri "$GitHubURI/$OSDCloudFunctionsPath/Invoke-OSDSpecialize.ps1" -OutFile "$ModulePath/$OSDCloudFunctionsPath/Invoke-OSDSpecialize.ps1"
+        }
+    }
+}
+    
 function osdcloud-InstallModuleAzAccounts {
     [CmdletBinding()]
     param ()

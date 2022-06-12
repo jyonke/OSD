@@ -107,7 +107,17 @@ Function osdcloud-InstallDCU {
 
 #Function to Run DCU to install drivers, BIOS and firmware updates.
 function osdcloud-RunDCU {
+    <#
+    https://dl.dell.com/content/manual13608255-dell-command-update-version-4-x-reference-guide.pdf
+    #Update Type: bios, firmware, driver, apps, and others
+    #>
 
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory=$false)]
+        [ValidateSet("bios", "firmware", "driver", "apps", "other")]
+        $UpdateType = "driver"
+        )
     $DCUReturnTablet = @(
     @{ReturnCode = "0";  Description = "Command execution was successful."; Resolution = "None"}
     @{ReturnCode = "1";  Description = "A reboot was required from the execution of an operation."; Resolution = "Reboot the system to complete the operation."}
@@ -118,6 +128,9 @@ function osdcloud-RunDCU {
     @{ReturnCode = "6";  Description = "Another instance of the same application (UI or CLI) is already running."; Resolution = "Close any running instance of Dell Command | Update UI or CLI and retry the operation."}
     @{ReturnCode = "7";  Description = "The application does not support the current system model."; Resolution = "Contact your administrator if the current system model in not supported by the catalog."}
     @{ReturnCode = "8";  Description = "No update filters have been applied or configured."; Resolution = "Supply at least one update filter."}
+    @{ReturnCode = "500";  Description = "No updates were found for the system when a scan operation was performed."; Resolution = "The system is up to date or no updates were found for the provided filters. Modify the filters and rerun the commands."}
+    @{ReturnCode = "501";  Description = "An error occurred while determining the available updates for the system, when a scan operation was performed."; Resolution = "Retry the operation."}
+    @{ReturnCode = "503";  Description = "An error occurred while downloading a file during the scan operation."; Resolution = "Check your network connection, ensure there is Internet connectivity and Retry the command."}
     @{ReturnCode = "1000";  Description = "An error occurred when retrieving the result of the apply updates operation."; Resolution = "Retry the operation."}
     @{ReturnCode = "1001";  Description = "The cancellation was initiated, Hence, the apply updates operation is canceled."; Resolution = "Retry the operation."}
     @{ReturnCode = "1002";  Description = "An error occurred while downloading a file during the apply updates operation."; Resolution = "Check your network connection, ensure there is Internet connectivity, and retry the command."}
@@ -126,8 +139,8 @@ function osdcloud-RunDCU {
     $LogFolder = "c:\OSDCloud\Logs"
     $LogFile = "$LogFolder\DCU.log"
     $ProcessPath = 'C:\Program Files (x86)\Dell\CommandUpdate\dcu-cli.exe'
-    $ProcessArgs = "/applyUpdates -updateType=firmware,driver -outputLog=$logfile -reboot=enable"
-
+    $ProcessArgs = "/applyUpdates -updateType=$UpdateType -outputLog=$logfile -reboot=enable"
+    if (!(test-path $ProcessPath -ErrorAction SilentlyContinue)){throw "No DCU Installed"}
     try {[void][System.IO.Directory]::CreateDirectory($LogFolder)}
     catch {throw}
 
@@ -136,6 +149,23 @@ function osdcloud-RunDCU {
 
     Write-Host "DCU Finished with Code: $($DCU.ExitCode): $($DCUReturn.Description)"
 }
+
+
+function osdcloud-DCUAutoUpdate {
+    <#
+    Enables DCU Auto Update
+    #>
+
+    $ProcessPath = 'C:\Program Files (x86)\Dell\CommandUpdate\dcu-cli.exe'
+    $ProcessArgs = "/configure -scheduleAuto -scheduleAction=DownloadInstallAndNotify -scheduledReboot=60"
+    if (!(test-path $ProcessPath -ErrorAction SilentlyContinue)){throw "No DCU Installed"}
+
+    $DCU = Start-Process -FilePath $ProcessPath -ArgumentList $ProcessArgs -Wait -PassThru -NoNewWindow
+    $DCUReturn = $DCUReturnTablet | Where-Object {$_.ReturnCode -eq $DCU.ExitCode}
+
+    Write-Host "DCU Finished with Code: $($DCU.ExitCode): $($DCUReturn.Description)"
+}
+
 
 #endregion
 #=================================================

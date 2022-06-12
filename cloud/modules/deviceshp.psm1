@@ -14,6 +14,14 @@
 #=================================================
 #region Functions
 
+
+function osdcloud-addserviceui {
+    [CmdletBinding()]
+    param ()
+    $EXEName = "ServiceUI.exe"
+    $EXEURL = "https://github.com/gwblok/garytown/raw/master/OSD/CloudOSD/$EXEName"
+    Invoke-WebRequest -UseBasicParsing -Uri $EXEURL -OutFile "$env:TEMP\$EXEName"
+}
 function osdcloud-TestHPIASupport {
     $CabPath = "$env:TEMP\platformList.cab"
     $XMLPath = "$env:TEMP\platformList.xml"
@@ -131,7 +139,7 @@ function osdcloud-DownloadHPTPMEXE {
         if (!(Test-Path -Path $UpdatePath)){Throw "Failed to Download TPM Update"}
     }    
 }
-function osdcloud-InstallTPMEXE {
+function osdcloud-InstallHPTPMEXE {
     [CmdletBinding()]
     Param (
         [Parameter(Mandatory=$false)]
@@ -213,8 +221,40 @@ function osdcloud-UpdateHPTPM {
         return "No TPM Update Available"
     }
     }
+Function osdcloud-HPIAOfflineSync {
+    [CmdletBinding()]
+    Param (
+        [Parameter(Mandatory=$false)]
+        [ValidateSet("All", "BIOS", "Driver", "Software", "Firmware", "UWPPack")]
+        $Category = "Driver",
+        [Parameter(Mandatory=$false)]
+        $OS = "win10",
+        [Parameter(Mandatory=$false)]
+        $Release = "21H2"
+        )
+    
+    #Create HPIA Repo & Sync for this Platform (EXE / Online)
+    $LogFolder = "C:\OSDCloud\Logs"
+    $HPIARepoFolder = "C:\OSDCloud\HPIA\Repo"
+    $PlatformCode = (Get-CimInstance -Namespace root/cimv2 -ClassName Win32_BaseBoard).Product
+
+    Write-Host "Starting HPCMSL to create HPIA Repo for $($PlatformCode) with Drivers" -ForegroundColor Green
+    write-host " This process can take several minutes to download all drivers" -ForegroundColor Gray
+    write-host " Writing Progress Log to $LogFolder" -ForegroundColor Gray
+    write-host " Downloading to $HPIARepoFolder" -ForegroundColor Gray
+    New-Item -Path $LogFolder -ItemType Directory -Force | Out-Null
+    New-Item -Path $HPIARepoFolder -ItemType Directory -Force | Out-Null
+    $CurrentLocation = Get-Location
+    Set-Location -Path $HPIARepoFolder
+    Initialize-Repository
+    Set-RepositoryConfiguration -Setting OfflineCacheMode -CacheValue Enable
+    Add-RepositoryFilter -Os $OS -OsVer $Release -Category $Category -Platform $PlatformCode
+    Invoke-RepositorySync -Verbose 4> "$LogFolder\HPIAOfflineSync.log"
+    Set-Location $CurrentLocation
+    Write-Host "Completed Driver Download for HP Device to be applied in OOBE" -ForegroundColor Green
+}
 Function osdcloud-RunHPIA {
-    <#
+<#
     Update HP Drivers via HPIA - Gary Blok - @gwblok
     Several Code Snips taken from: https://smsagent.blog/2021/03/30/deploying-hp-bios-updates-a-real-world-example/
     
@@ -245,7 +285,12 @@ Function osdcloud-RunHPIA {
             [Parameter(Mandatory=$false)]
             $LogFolder = "$env:systemdrive\OSDCloud\Logs",
             [Parameter(Mandatory=$false)]
-            $ReportsFolder = "$env:systemdrive\OSDCloud\HPIA"
+            $ReportsFolder = "$env:systemdrive\OSDCloud\HPIA",
+            [Parameter(Mandatory=$false)]
+            $OfflineFolder = "$env:systemdrive\OSDCloud\HPIA\Repo",
+            [Parameter(Mandatory=$false)]
+            [ValidateSet($true, $false)]
+            $OfflineMode = $false
             )
         # Params
         $HPIAWebUrl = "https://ftp.hp.com/pub/caps-softpaq/cmit/HPIA.html" # Static web page of the HP Image Assistant
@@ -404,9 +449,32 @@ Function osdcloud-RunHPIA {
         ##############################################
         CMTraceLog –Message "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –Component "Update"
         Write-Host "Running HPIA With Args: /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" -ForegroundColor Green
+        osdcloud-addserviceui
         try 
         {
-            $Process = Start-Process –FilePath $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder –ArgumentList "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –NoNewWindow –PassThru –Wait –ErrorAction Stop
+            if ($OfflineMode -eq $false){
+                if (Test-Path -path $env:temp\ServiceUI.exe)
+                    {
+                    Write-Host "Running HPIA With Args: $env:temp\ServiceUI.exe -process:Explorer.exe $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" -ForegroundColor Green                   
+                    $Process = Start-Process –FilePath $env:temp\ServiceUI.exe –ArgumentList "-process:Explorer.exe $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –NoNewWindow –PassThru –Wait –ErrorAction Stop
+                }
+                else {                
+                    Write-Host "Running HPIA With Args: /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" -ForegroundColor Green                   
+                    $Process = Start-Process –FilePath $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder –ArgumentList "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –NoNewWindow –PassThru –Wait –ErrorAction Stop
+                }
+                CMTraceLog –Message "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –Component "Update"
+                Write-Host "Running HPIA With Args: /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" -ForegroundColor Green
+                $Process = Start-Process –FilePath $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder –ArgumentList "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –NoNewWindow –PassThru –Wait –ErrorAction Stop
+                }
+            if ($OfflineMode -eq $true){
+                CMTraceLog –Message "/Offlinemode:$Offlinefolder /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –Component "Update"
+                Write-Host "Running HPIA With Args: /Offlinemode:$Offlinefolder /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action  /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" -ForegroundColor Green 
+                $Process = Start-Process –FilePath $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder –ArgumentList "/Offlinemode:$Offlinefolder /Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Noninteractive /Debug /ReportFolder:$ReportsFolder /LogFolder:$ReportsFolder" –NoNewWindow –PassThru –Wait –ErrorAction Stop
+                }
+            (New-Object -ComObject WScript.Shell).AppActivate((get-process HPImageAssistant.dll).Description)
+            
+            #$Process = Start-Process –FilePath $TempWorkFolder\HPIA\HPImageAssistant.exe –WorkingDirectory $TempWorkFolder –ArgumentList "/Operation:$Operation /Category:$Category /Selection:$Selection /Action:$Action /Noninteractive /Debug /LogFolder:$ReportsFolder" –NoNewWindow –PassThru –Wait –ErrorAction Stop
+
             If ($Process.ExitCode -eq 0)
             {
                 CMTraceLog –Message "Analysis complete" –Component "Update"

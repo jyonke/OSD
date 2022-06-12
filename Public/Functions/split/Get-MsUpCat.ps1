@@ -55,45 +55,46 @@ function Get-MsUpCat {
         [string] $SortBy,
 
         [Parameter(Mandatory = $false)]
-        [System.Management.Automation.SwitchParameter] $Descending,
+        [switch] $Descending,
 
         [Parameter(Mandatory = $false)]
-        [System.Management.Automation.SwitchParameter] $Strict,
+        [switch] $Strict,
 
         [Parameter(Mandatory = $false)]
-        [System.Management.Automation.SwitchParameter] $IncludeFileNames,
+        [switch] $IncludeFileNames,
 
         [Parameter(Mandatory = $false)]
-        [System.Management.Automation.SwitchParameter] $AllPages
+        [switch] $AllPages
     )
 
     try {
         $ProgPref = $ProgressPreference
         $ProgressPreference = "SilentlyContinue"
 
-        $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Search"
+        $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$([uri]::EscapeDataString($Search))"
         $Res = Invoke-CatalogRequest -Uri $Uri
 
         if ($PSBoundParameters.ContainsKey("SortBy")) {
             $SortParams = @{
-                Uri = $Uri
-                SortBy = $SortBy
-                Descending = $Descending
-                EventArgument = $Res.EventArgument
-                EventValidation = $Res.EventValidation
-                ViewState = $Res.ViewState
+                Uri                = $Uri
+                SortBy             = $SortBy
+                Descending         = $Descending
+                EventArgument      = $Res.EventArgument
+                EventValidation    = $Res.EventValidation
+                ViewState          = $Res.ViewState
                 ViewStateGenerator = $Res.ViewStateGenerator
             }
             $Res = Sort-CatalogResults @SortParams
-        } else {
+        }
+        else {
             # Default sort is by LastUpdated and in descending order.
             $SortParams = @{
-                Uri = $Uri
-                SortBy = "LastUpdated"
-                Descending = $true
-                EventArgument = $Res.EventArgument
-                EventValidation = $Res.EventValidation
-                ViewState = $Res.ViewState
+                Uri                = $Uri
+                SortBy             = "LastUpdated"
+                Descending         = $true
+                EventArgument      = $Res.EventArgument
+                EventValidation    = $Res.EventValidation
+                ViewState          = $Res.ViewState
                 ViewStateGenerator = $Res.ViewStateGenerator
             }
             $Res = Sort-CatalogResults @SortParams
@@ -103,44 +104,45 @@ function Get-MsUpCat {
 
         if ($Strict -and -not $AllPages) {
             $StrictRows = $Rows.Where({
-                $_.SelectNodes("td")[1].innerText.Trim() -like "*$Search*"
-            })
+                    $_.SelectNodes("td")[1].innerText.Trim() -like "*$Search*"
+                })
             # If $NextPage is $null then there are more pages to collect. It is arse backwards but trust me.
             while (($StrictRows.Count -lt 25) -and ($Res.NextPage -eq "")) {
                 $NextParams = @{
-                    Uri = $Uri
-                    EventArgument = $Res.EventArgument
-                    EventTarget = 'ctl00$catalogBody$nextPageLinkText'
-                    EventValidation = $Res.EventValidation
-                    ViewState = $Res.ViewState
+                    Uri                = $Uri
+                    EventArgument      = $Res.EventArgument
+                    EventTarget        = 'ctl00$catalogBody$nextPageLinkText'
+                    EventValidation    = $Res.EventValidation
+                    ViewState          = $Res.ViewState
                     ViewStateGenerator = $Res.ViewStateGenerator
-                    Method = "Post"
+                    Method             = "Post"
                 }
                 $Res = Invoke-CatalogRequest @NextParams
                 $StrictRows += $Res.Rows.Where({
-                    $_.SelectNodes("td")[1].innerText.Trim() -like "*$Search*"
-                })
+                        $_.SelectNodes("td")[1].innerText.Trim() -like "*$Search*"
+                    })
             }
             $Rows = $StrictRows[0..24]
-        } elseif ($AllPages) {
+        }
+        elseif ($AllPages) {
             # If $NextPage is $null then there are more pages to collect. It is arse backwards but trust me.
             while ($Res.NextPage -eq "") {
                 $NextParams = @{
-                    Uri = $Uri
-                    EventArgument = $Res.EventArgument
-                    EventTarget = 'ctl00$catalogBody$nextPageLinkText'
-                    EventValidation = $Res.EventValidation
-                    ViewState = $Res.ViewState
+                    Uri                = $Uri
+                    EventArgument      = $Res.EventArgument
+                    EventTarget        = 'ctl00$catalogBody$nextPageLinkText'
+                    EventValidation    = $Res.EventValidation
+                    ViewState          = $Res.ViewState
                     ViewStateGenerator = $Res.ViewStateGenerator
-                    Method = "Post"
+                    Method             = "Post"
                 }
                 $Res = Invoke-CatalogRequest @NextParams
                 $Rows += $Res.Rows
             }
             if ($Strict) {
                 $Rows = $Rows.Where({
-                    $_.SelectNodes("td")[1].innerText.Trim() -like "*$Search*"
-                })
+                        $_.SelectNodes("td")[1].innerText.Trim() -like "*$Search*"
+                    })
             }
         }
         
@@ -150,15 +152,18 @@ function Get-MsUpCat {
                     [MsUpCat]::new($Row, $IncludeFileNames)
                 }
             }
-        } else {
+        }
+        else {
             Write-Warning "No updates found matching the search term."
         }
         $ProgressPreference = $ProgPref
-    } catch {
+    }
+    catch {
         $ProgressPreference = $ProgPref
         if ($_.Exception.Message -like "We did not find*") {
-            #Write-Warning $_.Exception.Message
-        } else {
+            Write-Warning $_.Exception.Message
+        }
+        else {
             throw $_
         }
     }

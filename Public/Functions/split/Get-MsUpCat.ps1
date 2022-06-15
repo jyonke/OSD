@@ -161,7 +161,7 @@ function Get-MsUpCat {
     catch {
         $ProgressPreference = $ProgPref
         if ($_.Exception.Message -like "We did not find*") {
-            Write-Warning $_.Exception.Message
+            #Write-Warning $_.Exception.Message
         }
         else {
             throw $_
